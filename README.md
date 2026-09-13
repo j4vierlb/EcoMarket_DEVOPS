@@ -232,3 +232,7 @@ Content-Type: application/json
 
 **Javier Lara Bustos**  
 [GitHub](https://github.com/j4vierlb)
+
+## 🔧 Hotfix: ajuste de pipeline
+
+Se corrige la rama de hotfix para mantener la automatización y la sincronización entre main y develop.
