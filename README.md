@@ -236,3 +236,7 @@ Content-Type: application/json
 ## 🔧 Hotfix: ajuste de pipeline
 
 Se corrige la rama de hotfix para mantener la automatización y la sincronización entre main y develop.
+
+## 👤 Feature: validaciones de usuarios
+
+Se incorpora la rama de funcionalidad enfocada en validaciones del módulo de usuarios.
