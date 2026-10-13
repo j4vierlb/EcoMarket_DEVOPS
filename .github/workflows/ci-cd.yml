@@ -1,0 +1,432 @@
+name: EcoMarket CI/CD
+
+# Flujo: pruebas → seguridad → imagen → despliegue
+#   - Pull requests hacia develop/main: pruebas, seguridad e imagen (sin publicar ni desplegar)
+#   - Push a develop: además publica la imagen y la despliega en staging (Docker Compose)
+#   - Push a main:    además publica la imagen y la despliega en producción (Kubernetes)
+on:
+  push:
+    branches: [develop, main]
+  pull_request:
+    branches: [develop, main]
+  workflow_dispatch:
+
+# Si llega un commit nuevo a la misma rama, se cancela la ejecución anterior
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  IMAGEN: ghcr.io/${{ github.repository_owner }}/ecomarket
+
+jobs:
+  # ---------------------------------------------------------------- 1. Pruebas
+  pruebas:
+    name: Pruebas unitarias, integración y cobertura
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar código
+        uses: actions/checkout@v7
+
+      - name: Configurar JDK 17
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      # verify ejecuta: pruebas unitarias (Surefire) → pruebas de integración (Failsafe)
+      # → reporte JaCoCo → control de cobertura mínima (falla si es < 80 %)
+      - name: Ejecutar pruebas y control de cobertura
+        run: ./mvnw -B verify
+
+      - name: Resumen de pruebas y cobertura
+        if: always()
+        run: |
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import csv, glob, os, xml.etree.ElementTree as ET
+          print("## 🧪 Pruebas")
+          print("| Tipo | Ejecutadas | Fallidas | Errores |")
+          print("|------|-----------:|---------:|--------:|")
+          for tipo, carpeta in [("Unitarias", "surefire-reports"), ("Integración", "failsafe-reports")]:
+              t = f = e = 0
+              for archivo in glob.glob(f"target/{carpeta}/TEST-*.xml"):
+                  r = ET.parse(archivo).getroot()
+                  t += int(r.get("tests", 0)); f += int(r.get("failures", 0)); e += int(r.get("errors", 0))
+              print(f"| {tipo} | {t} | {f} | {e} |")
+          if os.path.exists("target/site/jacoco/jacoco.csv"):
+              filas = list(csv.DictReader(open("target/site/jacoco/jacoco.csv")))
+              cub = sum(int(x["LINE_COVERED"]) for x in filas)
+              fal = sum(int(x["LINE_MISSED"]) for x in filas)
+              print(f"\n**Cobertura de líneas:** {cub / (cub + fal) * 100:.1f} % (mínimo exigido: 80 %)")
+          PY
+
+      - name: Guardar reportes de pruebas y cobertura
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: reportes-pruebas-${{ github.sha }}
+          path: |
+            target/surefire-reports/
+            target/failsafe-reports/
+            target/site/jacoco/
+          retention-days: 30
+
+  # ---------------------------------------------------------------- 2. Seguridad
+  seguridad:
+    name: Análisis de seguridad (Snyk)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write   # publicar resultados en la pestaña Security → Code scanning
+    env:
+      SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+    steps:
+      - name: Descargar código
+        uses: actions/checkout@v7
+
+      - name: Configurar JDK 17
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Verificar token de Snyk
+        id: token
+        run: |
+          if [ -z "$SNYK_TOKEN" ]; then
+            echo "::error title=Falta SNYK_TOKEN::Agrega el secret SNYK_TOKEN en Settings → Secrets and variables → Actions"
+            exit 1
+          fi
+
+      - name: Instalar Snyk CLI
+        uses: snyk/actions/setup@v1
+
+      # Bloqueo: si hay vulnerabilidades de severidad alta o crítica en las dependencias, el pipeline se detiene
+      - name: Escanear dependencias (Snyk Open Source)
+        id: dependencias
+        run: snyk test --severity-threshold=high --sarif-file-output=snyk-dependencias.sarif
+
+      # Bloqueo: si el código tiene problemas de seguridad de severidad alta, el pipeline se detiene
+      - name: Analizar código fuente (Snyk Code)
+        id: codigo
+        if: ${{ !cancelled() && steps.token.outcome == 'success' }}
+        run: snyk code test --severity-threshold=high --sarif-file-output=snyk-codigo.sarif
+
+      # Alertas: los hallazgos quedan visibles en Security → Code scanning, aunque el escaneo falle
+      - name: Publicar alertas de dependencias
+        if: ${{ !cancelled() && hashFiles('snyk-dependencias.sarif') != '' }}
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: snyk-dependencias.sarif
+          category: snyk-dependencias
+
+      - name: Publicar alertas de código
+        if: ${{ !cancelled() && hashFiles('snyk-codigo.sarif') != '' }}
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: snyk-codigo.sarif
+          category: snyk-codigo
+
+      # Monitoreo continuo: Snyk avisa por correo si aparece una vulnerabilidad nueva en lo ya publicado
+      - name: Registrar proyecto en Snyk para monitoreo continuo
+        if: github.event_name == 'push'
+        continue-on-error: true
+        run: snyk monitor --project-name="EcoMarket" --target-reference="${{ github.ref_name }}"
+
+      - name: Resumen de seguridad
+        if: ${{ !cancelled() }}
+        run: |
+          {
+            echo "## 🔒 Seguridad (Snyk)"
+            echo "| Análisis | Resultado | Bloquea si |"
+            echo "|----------|-----------|------------|"
+            echo "| Dependencias (Open Source) | ${{ steps.dependencias.outcome || 'no ejecutado' }} | severidad alta o crítica |"
+            echo "| Código fuente (Snyk Code) | ${{ steps.codigo.outcome || 'no ejecutado' }} | severidad alta |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------- 3. Imagen
+  imagen:
+    name: Construir, probar y escanear imagen Docker
+    needs: [pruebas, seguridad]   # no se construye nada si fallan las pruebas o la seguridad
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write            # publicar en GitHub Container Registry
+      security-events: write
+    outputs:
+      imagen: ${{ steps.publicar.outputs.imagen }}
+      digest: ${{ steps.publicar.outputs.digest }}
+    env:
+      SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+    steps:
+      - name: Descargar código
+        uses: actions/checkout@v7
+
+      - name: Configurar Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      # Etiquetas para trazabilidad: sha-<commit>, nombre de la rama y "latest" solo en main.
+      # También agrega etiquetas OCI con el commit, la fecha y la URL del repositorio.
+      - name: Calcular etiquetas y metadatos
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGEN }}
+          tags: |
+            type=sha,prefix=sha-
+            type=ref,event=branch
+            type=ref,event=pr
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+
+      - name: Construir imagen
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          push: false
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Probar que el contenedor arranca y queda saludable
+        run: |
+          IMAGEN_LOCAL="${IMAGEN}:sha-${GITHUB_SHA::7}"
+          docker run -d --name prueba -p 8080:8080 "$IMAGEN_LOCAL"
+          for _ in $(seq 1 40); do
+            estado=$(docker inspect -f '{{.State.Health.Status}}' prueba)
+            [ "$estado" = healthy ] && break
+            sleep 3
+          done
+          echo "Estado del contenedor: $estado"
+          echo "Usuario del proceso: $(docker exec prueba id -u) (debe ser distinto de 0)"
+          [ "$estado" = healthy ] && [ "$(docker exec prueba id -u)" != 0 ]
+          scripts/smoke-test.sh http://localhost:8080
+          docker rm -f prueba
+
+      # Bloqueo: vulnerabilidades críticas en la imagen (sistema base + librerías) detienen el pipeline
+      - name: Instalar Snyk CLI
+        uses: snyk/actions/setup@v1
+
+      - name: Escanear imagen (Snyk Container)
+        id: escaneo
+        run: |
+          snyk container test "${IMAGEN}:sha-${GITHUB_SHA::7}" --file=Dockerfile \
+            --severity-threshold=critical --sarif-file-output=snyk-imagen.sarif
+
+      - name: Publicar alertas de la imagen
+        if: ${{ !cancelled() && hashFiles('snyk-imagen.sarif') != '' }}
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: snyk-imagen.sarif
+          category: snyk-imagen
+
+      # Solo se publica la imagen exacta que pasó las pruebas y el escaneo, y solo en push a develop/main
+      - name: Iniciar sesión en GitHub Container Registry
+        if: github.event_name == 'push'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publicar imagen
+        id: publicar
+        if: github.event_name == 'push'
+        run: |
+          docker push --all-tags "$IMAGEN"
+          IMAGEN_SHA="${IMAGEN}:sha-${GITHUB_SHA::7}"
+          DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$IMAGEN_SHA")
+          echo "imagen=$IMAGEN_SHA" >> "$GITHUB_OUTPUT"
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+
+      - name: Resumen de la imagen
+        if: ${{ !cancelled() }}
+        run: |
+          {
+            echo "## 🐳 Imagen"
+            echo "- Commit: \`${GITHUB_SHA}\`"
+            echo "- Escaneo Snyk Container (bloquea si hay críticas): ${{ steps.escaneo.outcome }}"
+            echo "- Publicada: ${{ steps.publicar.outputs.imagen || 'no (pull request)' }}"
+            echo "- Digest: \`${{ steps.publicar.outputs.digest || '-' }}\`"
+            echo ""
+            echo "Etiquetas:"
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------- 4a. Staging
+  despliegue-staging:
+    name: Desplegar en staging (Docker Compose)
+    needs: imagen
+    if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-latest
+    environment:
+      name: staging
+      url: http://localhost:8081
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Descargar código
+        uses: actions/checkout@v7
+
+      - name: Iniciar sesión en GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Las contraseñas se generan en cada despliegue y nunca se guardan en el repositorio
+      - name: Generar configuración del entorno
+        run: |
+          DB_PASSWORD=$(openssl rand -hex 16)
+          DB_ROOT_PASSWORD=$(openssl rand -hex 16)
+          echo "::add-mask::$DB_PASSWORD"
+          echo "::add-mask::$DB_ROOT_PASSWORD"
+          cat > .env <<EOF
+          DB_USER=ecomarket
+          DB_PASSWORD=$DB_PASSWORD
+          DB_ROOT_PASSWORD=$DB_ROOT_PASSWORD
+          APP_REPLICAS=2
+          PROXY_PORT=8081
+          ECOMARKET_IMAGE=${{ needs.imagen.outputs.imagen }}
+          EOF
+
+      - name: Desplegar (MySQL + 2 réplicas de la API + balanceador nginx)
+        run: docker compose up -d --no-build --wait --wait-timeout 300
+
+      - name: Prueba de humo
+        run: scripts/smoke-test.sh http://localhost:8081
+
+      - name: Verificar balanceo de carga entre réplicas
+        run: |
+          RESPUESTAS=$(for _ in $(seq 1 20); do curl -s -o /dev/null -D - http://localhost:8081/api/productos | grep -i x-upstream; done | sort -u | wc -l)
+          echo "Réplicas distintas que respondieron: $RESPUESTAS"
+          [ "$RESPUESTAS" -ge 2 ]
+
+      - name: Resumen del despliegue
+        if: always()
+        run: |
+          {
+            echo "## 🚀 Staging (Docker Compose)"
+            echo "- Imagen: \`${{ needs.imagen.outputs.imagen }}\`"
+            echo "- Digest: \`${{ needs.imagen.outputs.digest }}\`"
+            echo '```'
+            docker compose ps --format 'table {{.Name}}\t{{.Image}}\t{{.Status}}'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Logs en caso de error
+        if: failure()
+        run: docker compose logs --tail=200
+
+      - name: Apagar entorno
+        if: always()
+        run: docker compose down -v
+
+  # ---------------------------------------------------------------- 4b. Producción
+  despliegue-produccion:
+    name: Desplegar en producción (Kubernetes)
+    needs: imagen
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+    permissions:
+      contents: read
+      packages: read
+    env:
+      IMAGEN_DESPLIEGUE: ${{ needs.imagen.outputs.imagen }}
+    steps:
+      - name: Descargar código
+        uses: actions/checkout@v7
+
+      - name: Iniciar sesión en GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Descargar la imagen publicada
+        run: docker pull "$IMAGEN_DESPLIEGUE"
+
+      # Clúster Kubernetes efímero que simula el entorno cloud de producción
+      - name: Crear clúster Kubernetes (kind)
+        uses: helm/kind-action@v1.15.1
+        with:
+          cluster_name: ecomarket
+
+      - name: Cargar imagen en el clúster
+        run: kind load docker-image "$IMAGEN_DESPLIEGUE" --name ecomarket
+
+      # metrics-server permite que el HorizontalPodAutoscaler lea el uso de CPU
+      - name: Instalar metrics-server
+        run: |
+          kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/download/v0.9.0/components.yaml
+          kubectl -n kube-system patch deployment metrics-server --type=json \
+            -p='[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"}]'
+
+      - name: Fijar la imagen del commit en los manifiestos
+        run: |
+          sed -i "s|newName: ecomarket|newName: ${IMAGEN_DESPLIEGUE%:*}|; s|newTag: local|newTag: ${IMAGEN_DESPLIEGUE##*:}|" k8s/kustomization.yaml
+          kubectl kustomize k8s | grep "image:"
+
+      - name: Crear namespace y Secret con credenciales generadas
+        run: |
+          kubectl apply -f k8s/namespace.yaml
+          DB_PASSWORD=$(openssl rand -hex 16)
+          DB_ROOT_PASSWORD=$(openssl rand -hex 16)
+          echo "::add-mask::$DB_PASSWORD"
+          echo "::add-mask::$DB_ROOT_PASSWORD"
+          kubectl -n ecomarket create secret generic ecomarket-db \
+            --from-literal=DB_USER=ecomarket \
+            --from-literal=DB_PASSWORD="$DB_PASSWORD" \
+            --from-literal=DB_ROOT_PASSWORD="$DB_ROOT_PASSWORD"
+
+      - name: Desplegar manifiestos
+        run: |
+          kubectl apply -k k8s
+          # Trazabilidad: el historial de despliegues registra el commit y la ejecución del pipeline
+          kubectl -n ecomarket annotate deployment/ecomarket --overwrite \
+            kubernetes.io/change-cause="commit ${GITHUB_SHA::7} · run ${GITHUB_RUN_ID} · ${GITHUB_ACTOR}"
+
+      - name: Esperar a que el despliegue termine
+        run: |
+          kubectl -n ecomarket rollout status statefulset/mysql --timeout=300s
+          kubectl -n ecomarket rollout status deployment/ecomarket --timeout=300s
+
+      - name: Prueba de humo
+        run: |
+          kubectl -n ecomarket port-forward svc/ecomarket 8080:80 >/dev/null 2>&1 &
+          scripts/smoke-test.sh http://localhost:8080
+
+      - name: Resumen del despliegue
+        if: always()
+        run: |
+          sleep 30   # deja que metrics-server reporte el uso de CPU al HPA
+          {
+            echo "## ☸️ Producción (Kubernetes)"
+            echo "- Imagen: \`${IMAGEN_DESPLIEGUE}\`"
+            echo "- Digest: \`${{ needs.imagen.outputs.digest }}\`"
+            echo '```'
+            kubectl -n ecomarket get deploy,statefulset,pods,svc,hpa,pdb
+            echo ""
+            kubectl -n ecomarket rollout history deployment/ecomarket
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Diagnóstico en caso de error
+        if: failure()
+        run: |
+          kubectl -n ecomarket get events --sort-by=.lastTimestamp | tail -30
+          kubectl -n ecomarket describe pods
+          kubectl -n ecomarket logs -l app.kubernetes.io/name=ecomarket --all-containers --tail=100
