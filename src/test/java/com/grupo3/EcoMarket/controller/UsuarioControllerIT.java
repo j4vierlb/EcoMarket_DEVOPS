@@ -18,7 +18,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @SpringBootTest
 @AutoConfigureMockMvc
 @Transactional
-class UsuarioControllerTest {
+class UsuarioControllerIT {
 
     private static final String USUARIO_VALIDO = """
             {"nombre": "Ana", "correo": "ana@email.com", "contrasena": "segura123"}

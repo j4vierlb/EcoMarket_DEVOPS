@@ -17,7 +17,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @SpringBootTest
 @AutoConfigureMockMvc
 @Transactional
-class ProductoControllerTest {
+class ProductoControllerIT {
 
     private static final String PRODUCTO_VALIDO = """
             {"nombre": "Manzanas orgánicas", "descripcion": "Sin pesticidas", "stock": 100, "precio": 1500.50}
