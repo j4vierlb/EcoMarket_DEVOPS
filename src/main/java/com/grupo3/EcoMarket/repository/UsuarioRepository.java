@@ -1,4 +1,3 @@
-
 package com.grupo3.EcoMarket.repository;
 
 import com.grupo3.EcoMarket.model.Usuario;
@@ -7,4 +6,8 @@ import org.springframework.stereotype.Repository;
 
 @Repository
 public interface UsuarioRepository extends JpaRepository<Usuario, Long> {
+
+    boolean existsByCorreo(String correo);
+
+    boolean existsByCorreoAndIdNot(String correo, Long id);
 }

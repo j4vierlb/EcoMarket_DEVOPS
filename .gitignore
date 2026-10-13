@@ -1,2 +1,8 @@
 target/
 .DS_Store
+HELP.md
+
+# IDEs
+.idea/
+*.iml
+.vscode/

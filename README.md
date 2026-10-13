@@ -75,12 +75,12 @@ El repositorio incluye una acción automática configurada en `.github/workflows
 Se ejecuta en:
 
 - cada push a `develop`
-- cada pull request hacia `main`
+- cada pull request hacia `main` o `develop`
 
 La pipeline valida el proyecto ejecutando Maven con:
 
 ```bash
-mvn test
+./mvnw test
 ```
 
 Esto permite automatizar la integración de cambios y comprobar que el microservicio sigue compilando y funcionando correctamente.
@@ -93,7 +93,9 @@ Esto permite automatizar la integración de cambios y comprobar que el microserv
 |------|-----------|
 | Backend | Java + Spring Boot |
 | Persistencia | Spring Data JPA + Hibernate |
-| Base de datos | MySQL |
+| Base de datos | H2 en memoria (por defecto) / MySQL (perfil `mysql`) |
+| Validación | Bean Validation (Jakarta) |
+| Seguridad | Contraseñas hasheadas con BCrypt |
 | API | REST con JSON |
 | Build | Maven |
 
@@ -128,7 +130,25 @@ Esto permite automatizar la integración de cambios y comprobar que el microserv
 | GET | `/api/pedidos` | Listar todos los pedidos |
 | GET | `/api/pedidos/{id}` | Obtener pedido por ID |
 | POST | `/api/pedidos` | Crear nuevo pedido |
+| PUT | `/api/pedidos/{id}` | Actualizar pedido |
 | DELETE | `/api/pedidos/{id}` | Eliminar pedido |
+
+### Códigos de respuesta
+
+| Código | Cuándo |
+|--------|--------|
+| `200` | Consulta o actualización correcta |
+| `201` | Recurso creado (POST) |
+| `204` | Recurso eliminado (DELETE) |
+| `400` | Datos inválidos; el cuerpo incluye `errores` por campo |
+| `404` | El recurso con ese `id` no existe |
+| `409` | Ya existe un usuario con ese correo |
+
+### Validaciones
+
+- **Usuario**: `nombre` obligatorio (máx. 100), `correo` obligatorio, con formato válido y único, `contrasena` obligatoria (mín. 8 caracteres). La contraseña se guarda hasheada con BCrypt y nunca se devuelve en las respuestas.
+- **Producto**: `nombre` obligatorio, `stock` ≥ 0, `precio` obligatorio y > 0.
+- **Pedido**: `descripcion` obligatoria, `total` obligatorio y ≥ 0. Si no se envía `fecha`, se usa la fecha actual.
 
 ---
 
@@ -143,6 +163,8 @@ Controller (REST)  →  Service (lógica de negocio)  →  Repository (acceso a 
 ```
 src/
 └── main/java/com/grupo3/EcoMarket/
+    ├── config/           # CORS y PasswordEncoder
+    ├── exception/        # Manejo global de errores
     ├── controller/       # Controladores REST
     │   ├── ProductoController.java
     │   ├── UsuarioController.java
@@ -150,7 +172,7 @@ src/
     ├── service/          # Lógica de negocio
     │   ├── ProductoService.java
     │   ├── UsuarioService.java
-    │   └── Pedidoservice.java
+    │   └── PedidoService.java
     ├── repository/       # Acceso a datos (Spring Data JPA)
     │   ├── ProductoRepository.java
     │   ├── UsuarioRepository.java
@@ -158,7 +180,7 @@ src/
     └── model/            # Entidades JPA
         ├── Producto.java
         ├── Usuario.java
-        └── pedido.java
+        └── Pedido.java
 ```
 
 ---
@@ -168,18 +190,21 @@ src/
 ### Requisitos previos
 
 - Java 17+
-- Maven
-- MySQL
+- (Opcional) MySQL
+
+No hace falta instalar Maven: el proyecto incluye el wrapper `./mvnw`.
 
 ### Configuración de base de datos
 
-Crea una base de datos en MySQL y configura el archivo `src/main/resources/application.properties`:
+Por defecto la aplicación usa **H2 en memoria**, así que funciona sin instalar nada (los datos se pierden al reiniciar).
 
-```properties
-spring.datasource.url=jdbc:mysql://localhost:3306/ecomarket
-spring.datasource.username=tu_usuario
-spring.datasource.password=tu_contraseña
-spring.jpa.hibernate.ddl-auto=update
+Para usar **MySQL**, crea la base de datos `ecomarket` y arranca con el perfil `mysql`. Las credenciales se leen de variables de entorno (ver `src/main/resources/application-mysql.properties`):
+
+```bash
+export DB_URL=jdbc:mysql://localhost:3306/ecomarket
+export DB_USER=tu_usuario
+export DB_PASSWORD=tu_contraseña
+./mvnw spring-boot:run -Dspring-boot.run.profiles=mysql
 ```
 
 ### Pasos para ejecutar
@@ -190,7 +215,7 @@ git clone https://github.com/j4vierlb/EcoMarket.git
 cd EcoMarket
 
 # 2. Compilar y ejecutar
-mvn spring-boot:run
+./mvnw spring-boot:run
 ```
 
 La API estará disponible en `http://localhost:8080`
@@ -236,7 +261,3 @@ Content-Type: application/json
 ## 🔧 Hotfix: ajuste de pipeline
 
 Se corrige la rama de hotfix para mantener la automatización y la sincronización entre main y develop.
-
-## 👤 Feature: validaciones de usuarios
-
-Se incorpora la rama de funcionalidad enfocada en validaciones del módulo de usuarios.

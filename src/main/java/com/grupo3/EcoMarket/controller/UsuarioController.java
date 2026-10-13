@@ -1,16 +1,15 @@
-
 package com.grupo3.EcoMarket.controller;
 
 import com.grupo3.EcoMarket.model.Usuario;
 import com.grupo3.EcoMarket.service.UsuarioService;
-import org.springframework.http.ResponseEntity;
+import jakarta.validation.Valid;
+import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 
 @RestController
 @RequestMapping("/api/usuarios")
-@CrossOrigin("*")
 public class UsuarioController {
 
     private final UsuarioService usuarioService;
@@ -25,29 +24,24 @@ public class UsuarioController {
     }
 
     @GetMapping("/{id}")
-    public ResponseEntity<Usuario> getUsuarioById(@PathVariable Long id) {
-        return usuarioService.obtenerPorId(id)
-                .map(ResponseEntity::ok)
-                .orElse(ResponseEntity.notFound().build());
+    public Usuario getUsuarioById(@PathVariable Long id) {
+        return usuarioService.obtenerPorId(id);
     }
 
     @PostMapping
-    public Usuario crearUsuario(@RequestBody Usuario usuario) {
+    @ResponseStatus(HttpStatus.CREATED)
+    public Usuario crearUsuario(@Valid @RequestBody Usuario usuario) {
         return usuarioService.crearUsuario(usuario);
     }
 
     @PutMapping("/{id}")
-    public ResponseEntity<Usuario> actualizarUsuario(@PathVariable Long id, @RequestBody Usuario usuario) {
-        try {
-            return ResponseEntity.ok(usuarioService.actualizarUsuario(id, usuario));
-        } catch (RuntimeException e) {
-            return ResponseEntity.notFound().build();
-        }
+    public Usuario actualizarUsuario(@PathVariable Long id, @Valid @RequestBody Usuario usuario) {
+        return usuarioService.actualizarUsuario(id, usuario);
     }
 
     @DeleteMapping("/{id}")
-    public ResponseEntity<Void> eliminarUsuario(@PathVariable Long id) {
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void eliminarUsuario(@PathVariable Long id) {
         usuarioService.eliminarUsuario(id);
-        return ResponseEntity.noContent().build();
     }
 }

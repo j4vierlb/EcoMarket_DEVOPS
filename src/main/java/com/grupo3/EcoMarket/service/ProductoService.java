@@ -2,30 +2,45 @@ package com.grupo3.EcoMarket.service;
 
 import com.grupo3.EcoMarket.model.Producto;
 import com.grupo3.EcoMarket.repository.ProductoRepository;
-import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.util.List;
-import java.util.Optional;
 
 @Service
 public class ProductoService {
-    @Autowired
-    private ProductoRepository repository;
+
+    private final ProductoRepository repository;
+
+    public ProductoService(ProductoRepository repository) {
+        this.repository = repository;
+    }
 
     public List<Producto> listar() {
         return repository.findAll();
     }
 
-    public Optional<Producto> obtenerPorId(Long id) {
-        return repository.findById(id);
+    public Producto obtenerPorId(Long id) {
+        return repository.findById(id)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Producto no encontrado"));
     }
 
-    public Producto guardar(Producto producto) {
+    public Producto crear(Producto producto) {
+        producto.setId(null);
         return repository.save(producto);
     }
 
+    public Producto actualizar(Long id, Producto producto) {
+        Producto existente = obtenerPorId(id);
+        existente.setNombre(producto.getNombre());
+        existente.setDescripcion(producto.getDescripcion());
+        existente.setStock(producto.getStock());
+        existente.setPrecio(producto.getPrecio());
+        return repository.save(existente);
+    }
+
     public void eliminar(Long id) {
-        repository.deleteById(id);
+        repository.delete(obtenerPorId(id));
     }
 }
