@@ -4,12 +4,18 @@ name: EcoMarket CI/CD
 #   - Pull requests hacia develop/main: pruebas, seguridad e imagen (sin publicar ni desplegar)
 #   - Push a develop: además publica la imagen y la despliega en staging (Docker Compose)
 #   - Push a main:    además publica la imagen y la despliega en producción (Kubernetes)
+#   - Ejecución manual: igual que un push a la rama elegida; en main permite simular un fallo
 on:
   push:
     branches: [develop, main]
   pull_request:
     branches: [develop, main]
   workflow_dispatch:
+    inputs:
+      simular_fallo:
+        description: "Solo en main: desplegar una versión defectuosa para demostrar el rollback automático"
+        type: boolean
+        default: false
 
 # Si llega un commit nuevo a la misma rama, se cancela la ejecución anterior
 concurrency:
@@ -158,6 +164,8 @@ jobs:
       contents: read
       packages: write            # publicar en GitHub Container Registry
       security-events: write
+      id-token: write            # firmar las atestaciones (Sigstore)
+      attestations: write        # guardar las atestaciones de procedencia y SBOM
     outputs:
       imagen: ${{ steps.publicar.outputs.imagen }}
       digest: ${{ steps.publicar.outputs.digest }}
@@ -228,7 +236,7 @@ jobs:
 
       # Solo se publica la imagen exacta que pasó las pruebas y el escaneo, y solo en push a develop/main
       - name: Iniciar sesión en GitHub Container Registry
-        if: github.event_name == 'push'
+        if: github.event_name != 'pull_request'
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
@@ -237,13 +245,43 @@ jobs:
 
       - name: Publicar imagen
         id: publicar
-        if: github.event_name == 'push'
+        if: github.event_name != 'pull_request'
         run: |
           docker push --all-tags "$IMAGEN"
           IMAGEN_SHA="${IMAGEN}:sha-${GITHUB_SHA::7}"
           DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' "$IMAGEN_SHA")
           echo "imagen=$IMAGEN_SHA" >> "$GITHUB_OUTPUT"
           echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "sha256=${DIGEST#*@}" >> "$GITHUB_OUTPUT"
+
+      # SBOM: inventario de todos los componentes de la imagen (sistema, JRE y librerías)
+      - name: Generar SBOM de la imagen
+        if: github.event_name != 'pull_request'
+        uses: anchore/sbom-action@v0.24.3
+        with:
+          image: ${{ steps.publicar.outputs.imagen }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+          artifact-name: sbom-${{ github.sha }}.spdx.json
+
+      # Atestaciones firmadas: certifican qué commit y qué pipeline produjeron la imagen.
+      # Se verifican con: gh attestation verify oci://<imagen> --owner <dueño>
+      - name: Firmar procedencia de la imagen
+        if: github.event_name != 'pull_request'
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: ${{ env.IMAGEN }}
+          subject-digest: ${{ steps.publicar.outputs.sha256 }}
+          push-to-registry: true
+
+      - name: Firmar SBOM de la imagen
+        if: github.event_name != 'pull_request'
+        uses: actions/attest-sbom@v4
+        with:
+          subject-name: ${{ env.IMAGEN }}
+          subject-digest: ${{ steps.publicar.outputs.sha256 }}
+          sbom-path: sbom.spdx.json
+          push-to-registry: true
 
       - name: Resumen de la imagen
         if: ${{ !cancelled() }}
@@ -251,6 +289,8 @@ jobs:
           {
             echo "## 🐳 Imagen"
             echo "- Commit: \`${GITHUB_SHA}\`"
+            echo "- Tamaño: $(docker image inspect --format '{{.Size}}' "${IMAGEN}:sha-${GITHUB_SHA::7}" | awk '{printf "%.0f MB", $1/1000000}')"
+            echo "- SBOM y procedencia firmados: ${{ steps.publicar.outcome == 'success' && 'sí' || 'no (pull request)' }}"
             echo "- Escaneo Snyk Container (bloquea si hay críticas): ${{ steps.escaneo.outcome }}"
             echo "- Publicada: ${{ steps.publicar.outputs.imagen || 'no (pull request)' }}"
             echo "- Digest: \`${{ steps.publicar.outputs.digest || '-' }}\`"
@@ -265,7 +305,7 @@ jobs:
   despliegue-staging:
     name: Desplegar en staging (Docker Compose)
     needs: imagen
-    if: github.event_name == 'push' && github.ref == 'refs/heads/develop'
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/develop'
     runs-on: ubuntu-latest
     environment:
       name: staging
@@ -333,18 +373,21 @@ jobs:
         run: docker compose down -v
 
   # ---------------------------------------------------------------- 4b. Producción
+  # Simula una actualización real: el clúster arranca con la versión que ya estaba en producción
+  # (etiqueta "produccion"), se actualiza a la nueva sin cortes y, si falla, vuelve atrás solo.
   despliegue-produccion:
     name: Desplegar en producción (Kubernetes)
     needs: imagen
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment:
       name: production
     permissions:
       contents: read
-      packages: read
+      packages: write            # mover la etiqueta "produccion" a la versión desplegada
     env:
       IMAGEN_DESPLIEGUE: ${{ needs.imagen.outputs.imagen }}
+      SIMULAR_FALLO: ${{ inputs.simular_fallo == true }}
     steps:
       - name: Descargar código
         uses: actions/checkout@v7
@@ -356,17 +399,11 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Descargar la imagen publicada
-        run: docker pull "$IMAGEN_DESPLIEGUE"
-
       # Clúster Kubernetes efímero que simula el entorno cloud de producción
       - name: Crear clúster Kubernetes (kind)
         uses: helm/kind-action@v1.15.1
         with:
           cluster_name: ecomarket
-
-      - name: Cargar imagen en el clúster
-        run: kind load docker-image "$IMAGEN_DESPLIEGUE" --name ecomarket
 
       # metrics-server permite que el HorizontalPodAutoscaler lea el uso de CPU
       - name: Instalar metrics-server
@@ -374,11 +411,6 @@ jobs:
           kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/download/v0.9.0/components.yaml
           kubectl -n kube-system patch deployment metrics-server --type=json \
             -p='[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"}]'
-
-      - name: Fijar la imagen del commit en los manifiestos
-        run: |
-          sed -i "s|newName: ecomarket|newName: ${IMAGEN_DESPLIEGUE%:*}|; s|newTag: local|newTag: ${IMAGEN_DESPLIEGUE##*:}|" k8s/kustomization.yaml
-          kubectl kustomize k8s | grep "image:"
 
       - name: Crear namespace y Secret con credenciales generadas
         run: |
@@ -392,31 +424,133 @@ jobs:
             --from-literal=DB_PASSWORD="$DB_PASSWORD" \
             --from-literal=DB_ROOT_PASSWORD="$DB_ROOT_PASSWORD"
 
-      - name: Desplegar manifiestos
+      # Estado inicial: la versión que estaba en producción antes de este despliegue
+      - name: Restaurar la versión actual de producción
+        id: previa
         run: |
+          PREVIA="${IMAGEN}:produccion"
+          if ! docker pull "$PREVIA"; then
+            echo "Primera puesta en producción: no hay versión anterior."
+            echo "existe=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          REVISION=$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$PREVIA")
+          kind load docker-image "$PREVIA" --name ecomarket
+          cp -r k8s /tmp/k8s-previa
+          sed -i "s|newName: ecomarket|newName: ${IMAGEN}|; s|newTag: local|newTag: produccion|" /tmp/k8s-previa/kustomization.yaml
+          kubectl apply -k /tmp/k8s-previa
+          kubectl -n ecomarket annotate deployment/ecomarket --overwrite \
+            kubernetes.io/change-cause="versión anterior en producción · commit ${REVISION::7}"
+          kubectl -n ecomarket rollout status statefulset/mysql --timeout=300s
+          kubectl -n ecomarket rollout status deployment/ecomarket --timeout=300s
+          echo "existe=true" >> "$GITHUB_OUTPUT"
+          echo "revision=${REVISION::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Actualizar a la nueva versión (rolling update)
+        run: |
+          docker pull "$IMAGEN_DESPLIEGUE"
+          kind load docker-image "$IMAGEN_DESPLIEGUE" --name ecomarket
+          TAG="${IMAGEN_DESPLIEGUE##*:}"
+          if [ "$SIMULAR_FALLO" = "true" ]; then
+            echo "::warning title=Fallo simulado::Se despliega una imagen inexistente para demostrar el rollback automático"
+            TAG="version-defectuosa"
+          fi
+          sed -i "s|newName: ecomarket|newName: ${IMAGEN}|; s|newTag: local|newTag: ${TAG}|" k8s/kustomization.yaml
+          kubectl kustomize k8s | grep "image:"
           kubectl apply -k k8s
           # Trazabilidad: el historial de despliegues registra el commit y la ejecución del pipeline
           kubectl -n ecomarket annotate deployment/ecomarket --overwrite \
             kubernetes.io/change-cause="commit ${GITHUB_SHA::7} · run ${GITHUB_RUN_ID} · ${GITHUB_ACTOR}"
 
-      - name: Esperar a que el despliegue termine
+      # Si esta verificación falla, el siguiente paso hace el rollback
+      - name: Verificar el despliegue (rollout + prueba de humo)
+        id: verificar
+        continue-on-error: true
         run: |
           kubectl -n ecomarket rollout status statefulset/mysql --timeout=300s
-          kubectl -n ecomarket rollout status deployment/ecomarket --timeout=300s
-
-      - name: Prueba de humo
-        run: |
+          kubectl -n ecomarket rollout status deployment/ecomarket --timeout=240s
           kubectl -n ecomarket port-forward svc/ecomarket 8080:80 >/dev/null 2>&1 &
           scripts/smoke-test.sh http://localhost:8080
+
+      - name: Rollback automático
+        id: rollback
+        if: steps.verificar.outcome == 'failure'
+        run: |
+          echo "::error title=Despliegue fallido::La nueva versión no pasó la verificación"
+          if [ "${{ steps.previa.outputs.existe }}" != "true" ]; then
+            echo "No hay versión anterior a la que volver."
+            exit 1
+          fi
+          kubectl -n ecomarket rollout undo deployment/ecomarket
+          kubectl -n ecomarket rollout status deployment/ecomarket --timeout=240s
+          pkill -f "port-forward" || true
+          kubectl -n ecomarket port-forward svc/ecomarket 8081:80 >/dev/null 2>&1 &
+          scripts/smoke-test.sh http://localhost:8081
+          echo "::notice title=Rollback completado::Producción volvió a la versión ${{ steps.previa.outputs.revision }} y responde correctamente"
+          # El despliegue falló aunque el rollback haya salido bien
+          exit 1
+
+      # Genera carga real (cada alta de usuario cifra la contraseña con BCrypt, que usa CPU)
+      # y registra cómo el HorizontalPodAutoscaler agrega réplicas.
+      - name: Prueba de carga y autoescalado
+        id: carga
+        if: steps.verificar.outcome == 'success'
+        run: |
+          sleep 30   # metrics-server necesita unos segundos para tener métricas
+          kubectl run carga -n default --image=busybox:1.36 --restart=Never -- sh -c '
+            for w in $(seq 1 24); do
+              ( n=0; while true; do n=$((n+1));
+                  wget -q -O /dev/null --header="Content-Type: application/json" \
+                    --post-data="{\"nombre\":\"Carga\",\"correo\":\"c${w}x${n}@carga.cl\",\"contrasena\":\"segura123\"}" \
+                    http://ecomarket.ecomarket.svc.cluster.local/api/usuarios || true
+                done ) &
+            done; wait'
+          echo "| Segundo | CPU media / objetivo | Réplicas |" > carga.md
+          echo "|--------:|----------------------|---------:|" >> carga.md
+          MAX=2
+          for t in $(seq 0 10 180); do
+            CPU=$(kubectl -n ecomarket get hpa ecomarket -o jsonpath='{.status.currentMetrics[0].resource.current.averageUtilization}')
+            REP=$(kubectl -n ecomarket get deployment ecomarket -o jsonpath='{.status.readyReplicas}')
+            echo "| $t | ${CPU:-?} % / 70 % | ${REP:-?} |" | tee -a carga.md
+            [ "${REP:-0}" -gt "$MAX" ] && MAX=$REP
+            sleep 10
+          done
+          kubectl delete pod carga -n default --wait=false
+          echo "maximo=$MAX" >> "$GITHUB_OUTPUT"
+          if [ "$MAX" -gt 2 ]; then
+            echo "::notice title=Autoescalado::El HPA escaló de 2 a $MAX réplicas bajo carga"
+          else
+            echo "::warning title=Autoescalado::El HPA no alcanzó a escalar durante la prueba"
+          fi
+
+      # Solo una versión verificada pasa a ser la referencia de producción para el próximo rollback
+      - name: Marcar la versión como actual en producción
+        if: steps.verificar.outcome == 'success'
+        run: |
+          docker tag "$IMAGEN_DESPLIEGUE" "${IMAGEN}:produccion"
+          docker push "${IMAGEN}:produccion"
 
       - name: Resumen del despliegue
         if: always()
         run: |
-          sleep 30   # deja que metrics-server reporte el uso de CPU al HPA
           {
             echo "## ☸️ Producción (Kubernetes)"
-            echo "- Imagen: \`${IMAGEN_DESPLIEGUE}\`"
-            echo "- Digest: \`${{ needs.imagen.outputs.digest }}\`"
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Versión anterior | ${{ steps.previa.outputs.revision || 'ninguna (primer despliegue)' }} |"
+            echo "| Versión nueva | \`${IMAGEN_DESPLIEGUE}\` |"
+            echo "| Digest | \`${{ needs.imagen.outputs.digest }}\` |"
+            echo "| Fallo simulado | ${SIMULAR_FALLO} |"
+            echo "| Verificación | ${{ steps.verificar.outcome }} |"
+            echo "| Rollback automático | ${{ steps.rollback.outcome == 'skipped' && 'no fue necesario' || steps.rollback.outcome }} |"
+            echo "| Réplicas máximas bajo carga | ${{ steps.carga.outputs.maximo || '-' }} |"
+            if [ -f carga.md ]; then
+              echo ""
+              echo "### 📈 Autoescalado durante la prueba de carga"
+              cat carga.md
+            fi
+            echo ""
+            echo "### Estado final del clúster"
             echo '```'
             kubectl -n ecomarket get deploy,statefulset,pods,svc,hpa,pdb
             echo ""
@@ -425,7 +559,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Diagnóstico en caso de error
-        if: failure()
+        if: failure() || steps.verificar.outcome == 'failure'
         run: |
           kubectl -n ecomarket get events --sort-by=.lastTimestamp | tail -30
           kubectl -n ecomarket describe pods
