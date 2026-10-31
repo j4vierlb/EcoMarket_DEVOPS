@@ -385,16 +385,58 @@ Content-Type: application/json
 
 ---
 
+## Evidencias
+
+Ejecuciones reales del pipeline que demuestran cada parte del encargo. En cada enlace, la sección **Summary** muestra el resumen de pruebas, seguridad, imagen y despliegue.
+
+| Qué demuestra | Indicador | Evidencia |
+|---------------|-----------|-----------|
+| Snyk **bloqueó** el pipeline por 30 vulnerabilidades (23 altas, 7 críticas) de Spring Boot 3.5 | IE3 | [Ejecución bloqueada](https://github.com/j4vierlb/EcoMarket_DEVOPS/actions/runs/39893755541/attempts/2) |
+| Tras actualizar a Spring Boot 4.1.2 quedaron 2; se corrigieron fijando Jackson 3.1.8 y excluyendo JAXB | IE3 | [Ejecución con 2 restantes](https://github.com/j4vierlb/EcoMarket_DEVOPS/actions/runs/41164334069) · [PR #2](https://github.com/j4vierlb/EcoMarket_DEVOPS/pull/2) |
+| Despliegue automático en **staging** (Docker Compose: MySQL + 2 réplicas + nginx) | IE4, IE5 | [Ejecución en develop](https://github.com/j4vierlb/EcoMarket_DEVOPS/actions/runs/41214788696) |
+| Despliegue automático en **producción** (Kubernetes) con **autoescalado bajo carga** | IE4, IE5 | [Ejecución en main](https://github.com/j4vierlb/EcoMarket_DEVOPS/actions/runs/41215808186) |
+| **Rollback automático** ante una versión defectuosa (fallo simulado) | IE4 | [Ejecución con rollback](https://github.com/j4vierlb/EcoMarket_DEVOPS/actions/runs/41219235225) |
+| Dependabot abre PRs de actualización y pasan por el pipeline completo | IE3 | [PRs de Dependabot](https://github.com/j4vierlb/EcoMarket_DEVOPS/pulls?q=is%3Apr+author%3Aapp%2Fdependabot) |
+| Alertas de seguridad publicadas en GitHub (SARIF de Snyk) | IE3 | Pestaña *Security › Code scanning*, visible para los administradores del repositorio; los checks *Snyk Open Source*, *SnykCode* y *Snyk Container* aparecen en cada PR |
+| Atestaciones firmadas (procedencia SLSA y SBOM) de cada imagen publicada | IE1, IE4 | [Atestaciones](https://github.com/j4vierlb/EcoMarket_DEVOPS/attestations) |
+| Imágenes publicadas y etiquetadas por commit | IE1, IE4 | [Paquete ecomarket](https://github.com/j4vierlb/EcoMarket_DEVOPS/pkgs/container/ecomarket) |
+
+### Autoescalado durante la prueba de carga
+
+Registro de la [ejecución en producción](https://github.com/j4vierlb/EcoMarket_DEVOPS/actions/runs/41215808186): con la carga, la CPU media supera el objetivo del 70 % y el HPA pasa de 2 a 3 réplicas a los 40 s y a 5 (el máximo) a los 60 s.
+
+| Segundo | CPU media / objetivo | Réplicas |
+|--------:|---------------------:|---------:|
+| 0 | — / 70 % | 2 |
+| 20 | 79 % / 70 % | 2 |
+| 40 | 187 % / 70 % | 3 |
+| 60 | 395 % / 70 % | 5 |
+| 120 | 289 % / 70 % | 5 |
+| 180 | 277 % / 70 % | 5 |
+
+### Rollback automático
+
+Registro de la [ejecución con fallo simulado](https://github.com/j4vierlb/EcoMarket_DEVOPS/actions/runs/41219235225):
+
+1. Producción parte con la versión estable (`9c155b8`, etiqueta `produccion`).
+2. Se despliega una imagen inexistente (`version-defectuosa`): el pod nuevo queda en `ImagePullBackOff` y, gracias a `maxUnavailable: 0`, las 2 réplicas estables siguen atendiendo.
+3. La verificación detecta que el *rollout* no termina (`timed out waiting for the condition`).
+4. El pipeline ejecuta `kubectl rollout undo`, la versión `9c155b8` vuelve a estar activa y la prueba de humo pasa completa.
+5. El despliegue se marca como fallido (en rojo), porque la versión nueva no llegó a producción.
+
+### Tamaño de la imagen
+
+| Versión | Tamaño |
+|---------|-------:|
+| JRE completo (`eclipse-temurin:17-jre-noble`) | 523 MB |
+| JRE a medida con `jlink` sobre `ubuntu:noble` | 346 MB (−34 %) |
+
+---
+
 ## Autor
 
 **Javier Lara Bustos**  
 [GitHub](https://github.com/j4vierlb)
-
-## Hotfix: ajuste de pipeline
-
-Se corrige la rama de hotfix para mantener la automatización y la sincronización entre main y develop.
-
----
 
 ## Justificación técnica
 
