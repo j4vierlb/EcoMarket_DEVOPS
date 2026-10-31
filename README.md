@@ -1,8 +1,8 @@
-# 🌿 EcoMarket — API REST de Mercado Ecológico
+# EcoMarket — API REST de Mercado Ecológico
 
 Backend de un mercado ecológico desarrollado con **Spring Boot**, que expone una API REST para la gestión de productos, usuarios y pedidos. Arquitectura en capas siguiendo buenas prácticas de desarrollo Java.
 
-## 🧭 Modelo de ramificación: GitFlow
+## Modelo de ramificación: GitFlow
 
 Este proyecto implementa **GitFlow** como estrategia de trabajo colaborativo para mantener trazabilidad, estabilidad y orden en el desarrollo.
 
@@ -26,7 +26,7 @@ Este enfoque cumple con la evaluación de DevOps, ya que demuestra control de ve
 
 ---
 
-## 🔀 Flujo de trabajo del equipo
+## Flujo de trabajo del equipo
 
 1. Crear una rama `feature/<nombre>` desde `develop`.
 2. Implementar la funcionalidad con commits pequeños y descriptivos.
@@ -38,7 +38,7 @@ Este enfoque cumple con la evaluación de DevOps, ya que demuestra control de ve
 
 ---
 
-## 📝 Convenciones de commits
+## Convenciones de commits
 
 Se recomienda usar mensajes en estilo convencional:
 
@@ -58,7 +58,7 @@ Ejemplos:
 
 ---
 
-## ✅ Reglas de revisión y merge
+## Reglas de revisión y merge
 
 - Todo cambio debe pasar la validación automática.
 - Todo Pull Request debe revisarse antes del merge.
@@ -68,7 +68,7 @@ Ejemplos:
 
 ---
 
-## 🚀 Pipeline CI/CD (GitHub Actions)
+## Pipeline CI/CD (GitHub Actions)
 
 El pipeline está en [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml) y automatiza todo el ciclo de vida del microservicio: pruebas → seguridad → imagen → despliegue. Cada etapa depende de la anterior, así que **si una etapa falla, las siguientes no se ejecutan** y no se publica ni se despliega nada.
 
@@ -86,9 +86,9 @@ flowchart LR
 
 | Evento | Pruebas | Seguridad | Imagen | Publica en GHCR | Despliegue |
 |--------|:-:|:-:|:-:|:-:|------------|
-| Pull request hacia `develop` o `main` | ✅ | ✅ | ✅ | — | — |
-| Push (merge) a `develop` | ✅ | ✅ | ✅ | ✅ | Staging (Docker Compose) |
-| Push (merge) a `main` | ✅ | ✅ | ✅ | ✅ | Producción (Kubernetes) |
+| Pull request hacia `develop` o `main` | Sí | Sí | Sí | — | — |
+| Push (merge) a `develop` | Sí | Sí | Sí | Sí | Staging (Docker Compose) |
+| Push (merge) a `main` | Sí | Sí | Sí | Sí | Producción (Kubernetes) |
 
 ### Etapas
 
@@ -112,14 +112,27 @@ flowchart LR
 - Se construye con el [`Dockerfile`](Dockerfile), se arranca y se verifica que queda *healthy* y que no corre como root.
 - Se ejecuta la [prueba de humo](scripts/smoke-test.sh) contra el contenedor.
 - Se escanea con Snyk Container y solo entonces se publica en GitHub Container Registry (`ghcr.io/j4vierlb/ecomarket`).
+- Al publicarla se genera su **SBOM** (inventario de componentes en formato SPDX) y dos **atestaciones firmadas** (procedencia y SBOM) que certifican qué commit y qué ejecución del pipeline la produjeron. Se verifican con:
+  ```bash
+  gh attestation verify oci://ghcr.io/j4vierlb/ecomarket:<etiqueta> --owner j4vierlb
+  ```
 
 **4a. Staging — Docker Compose (IE4)**
 Levanta MySQL, 2 réplicas de la API y un balanceador nginx con la imagen recién publicada. Ejecuta la prueba de humo y comprueba que las peticiones se reparten entre las réplicas.
 
 **4b. Producción — Kubernetes (IE4, IE5)**
-Crea un clúster Kubernetes efímero con [kind](https://kind.sigs.k8s.io/) que simula el entorno cloud, despliega los manifiestos de [`k8s/`](k8s/) con la imagen del commit, espera el *rollout* y ejecuta la prueba de humo.
+Crea un clúster Kubernetes efímero con [kind](https://kind.sigs.k8s.io/) que simula el entorno cloud y reproduce una actualización real:
 
-### 🔎 Trazabilidad
+1. **Estado inicial**: despliega la versión que ya estaba en producción (imagen con la etiqueta `produccion`).
+2. **Rolling update** a la imagen del commit nuevo, sin cortes (`maxUnavailable: 0`).
+3. **Verificación**: espera el *rollout* y ejecuta la prueba de humo.
+4. **Rollback automático**: si la verificación falla, ejecuta `kubectl rollout undo`, comprueba que la versión anterior responde y marca el despliegue como fallido.
+5. **Prueba de carga**: si la versión nueva funciona, genera tráfico durante 3 minutos y registra en el resumen cómo el HPA aumenta las réplicas.
+6. Solo entonces la imagen nueva recibe la etiqueta `produccion` y pasa a ser la referencia para un futuro rollback.
+
+**Demostrar el rollback**: en *Actions › EcoMarket CI/CD › Run workflow*, elige la rama `main` y marca **"simular_fallo"**. El pipeline intentará desplegar una versión defectuosa, Kubernetes la mantendrá sin tráfico (las réplicas anteriores siguen atendiendo) y el rollback devolverá producción a la versión estable.
+
+### Trazabilidad
 
 Cada cambio puede seguirse desde el commit hasta el despliegue:
 
@@ -129,7 +142,7 @@ Cada cambio puede seguirse desde el commit hasta el despliegue:
 4. **Imagen → despliegue**: los jobs de despliegue usan los *environments* `staging` y `production` de GitHub, que guardan el historial de qué commit se desplegó y cuándo (pestaña *Deployments*).
 5. **Despliegue → Kubernetes**: el Deployment se anota con commit, ejecución y autor (`kubectl rollout history` lo muestra), lo que permite saber qué versión corre y volver atrás con `kubectl rollout undo`.
 
-### ⚙️ Configuración necesaria en GitHub
+### Configuración necesaria en GitHub
 
 | Qué | Dónde | Para qué |
 |-----|-------|----------|
@@ -141,7 +154,7 @@ Cada cambio puede seguirse desde el commit hasta el despliegue:
 
 ---
 
-## 🚀 Tecnologías utilizadas
+## Tecnologías utilizadas
 
 | Capa | Tecnología |
 |------|-----------|
@@ -160,9 +173,9 @@ Cada cambio puede seguirse desde el commit hasta el despliegue:
 
 ---
 
-## ✨ Endpoints disponibles
+## Endpoints disponibles
 
-### 📦 Productos — `/api/productos`
+### Productos — `/api/productos`
 
 | Método | Endpoint | Descripción |
 |--------|----------|-------------|
@@ -172,7 +185,7 @@ Cada cambio puede seguirse desde el commit hasta el despliegue:
 | PUT | `/api/productos/{id}` | Actualizar producto |
 | DELETE | `/api/productos/{id}` | Eliminar producto |
 
-### 👤 Usuarios — `/api/usuarios`
+### Usuarios — `/api/usuarios`
 
 | Método | Endpoint | Descripción |
 |--------|----------|-------------|
@@ -182,7 +195,7 @@ Cada cambio puede seguirse desde el commit hasta el despliegue:
 | PUT | `/api/usuarios/{id}` | Actualizar usuario |
 | DELETE | `/api/usuarios/{id}` | Eliminar usuario |
 
-### 🛒 Pedidos — `/api/pedidos`
+### Pedidos — `/api/pedidos`
 
 | Método | Endpoint | Descripción |
 |--------|----------|-------------|
@@ -211,7 +224,7 @@ Cada cambio puede seguirse desde el commit hasta el despliegue:
 
 ---
 
-## 🏗️ Arquitectura
+## Arquitectura
 
 El código sigue una arquitectura en 3 capas:
 
@@ -244,7 +257,7 @@ Controller (REST)  →  Service (lógica de negocio)  →  Repository (acceso a 
 
 ---
 
-## 🐳 Contenedores y orquestación
+## Contenedores y orquestación
 
 ### Imagen Docker (IE1)
 
@@ -254,7 +267,7 @@ El [`Dockerfile`](Dockerfile) usa **dos etapas**: una con el JDK para compilar y
 - **Usuario sin privilegios** (UID 10001) y archivos de la aplicación de solo lectura para ese usuario.
 - **`HEALTHCHECK`** con el endpoint de Actuator `/actuator/health/liveness`.
 - **Memoria de la JVM ajustada al contenedor** (`-XX:MaxRAMPercentage=75`).
-- Imagen base `eclipse-temurin:17-jre-noble`, multiplataforma (funciona en Intel/AMD y en Apple Silicon).
+- **JRE a medida con `jlink`**: en vez del JRE completo, la imagen incluye solo los módulos de Java que usa la aplicación (calculados con `jdeps`), sobre una base `ubuntu:noble` mínima y multiplataforma. Esto reduce el tamaño y la cantidad de software que puede tener vulnerabilidades. El *healthcheck* usa `bash` en vez de `curl` o `wget`, que no se instalan.
 
 ### Docker Compose — staging (IE5)
 
@@ -284,7 +297,7 @@ Los manifiestos de [`k8s/`](k8s/) se aplican con Kustomize:
 
 ---
 
-## ⚙️ Instalación y ejecución
+## Instalación y ejecución
 
 ### Requisitos previos
 
@@ -341,7 +354,7 @@ El reporte de cobertura queda en `target/site/jacoco/index.html`.
 
 ---
 
-## 📝 Ejemplo de uso
+## Ejemplo de uso
 
 ### Crear un producto
 
@@ -372,40 +385,52 @@ Content-Type: application/json
 
 ---
 
-## 👨‍💻 Autor
+## Autor
 
 **Javier Lara Bustos**  
 [GitHub](https://github.com/j4vierlb)
 
-## 🔧 Hotfix: ajuste de pipeline
+## Hotfix: ajuste de pipeline
 
 Se corrige la rama de hotfix para mantener la automatización y la sincronización entre main y develop.
 
 ---
 
-## 🧠 Justificación técnica
+## Justificación técnica
 
-> ✍️ **Sección para completar por el equipo** (sin IA, según las indicaciones de la evaluación): por qué eligieron estas herramientas y configuraciones (Snyk, umbrales de severidad, cobertura del 80 %, Compose para staging y Kubernetes para producción, número de réplicas, límites de recursos, etc.).
+### Contenedores
+Armamos el Dockerfile en dos pasos: primero se compila con JDK y Maven, y después se pasa solo lo necesario a una imagen con JRE. Así pesa menos y no queda ninguna herramienta que alguien pueda aprovechar. Dejamos las dependencias aparte del código para no reconstruir todo cada vez, y el contenedor no corre como root y trae un healthcheck con Actuator. Usamos eclipse-temurin:17-jre-noble porque Alpine no tiene versión para ARM y esta sirve en ambas arquitecturas.
 
-## 🤖 Declaración de uso de Inteligencia Artificial
+### Pruebas y calidad
+Dividimos las pruebas en dos tipos porque atrapan cosas distintas. Las unitarias con Mockito son rápidas y no tocan la base de datos, y las de integración con MockMvc y H2 prueban los endpoints completos. Pusimos un mínimo de 80% de cobertura con JaCoCo, suficiente para obligarnos a probar lo importante sin matarnos por llegar al 100%. Si no llega, el build se cae y no avanza nada.
 
-> ✍️ **Revisar y completar por el equipo.** Borrador con los usos reales registrados:
+### Seguridad
+Nos quedamos con Snyk porque con una sola herramienta cubre dependencias, código e imagen. En dependencias y código el pipeline se frena con severidad alta, ya que se arregla subiendo versiones. En la imagen solo se frena con críticas, porque la imagen base siempre trae fallas altas sin parche y nunca pasaríamos. Los resultados se ven en la pestaña Security de GitHub, y Dependabot sugiere actualizaciones cada semana.
+
+### Despliegue y trazabilidad
+A cada imagen le ponemos el hash del commit y etiquetas OCI, así siempre sabemos qué código hay detrás de lo que está corriendo. Se publica exactamente la misma imagen que ya pasó las pruebas y el escaneo, sin reconstruirla. Usamos los environments de GitHub (staging y production) para guardar el historial de despliegues, y en Kubernetes anotamos el Deployment con el commit y la corrida del pipeline.
+
+### Orquestación
+Para staging nos bastó Docker Compose, que levanta rápido la API con MySQL y nginx para probar que todo funcione. En producción usamos Kubernetes porque da lo que Compose no puede: escala solo entre 2 y 5 réplicas cuando la CPU pasa del 70%, actualiza sin cortar el servicio, reinicia lo que falle y deja que solo la API hable con MySQL. Partimos con 2 réplicas para que una siga funcionando si la otra cae, y limitamos a 512 MB porque medimos un uso de unos 210.
+
+## Declaración de uso de Inteligencia Artificial
 
 | Herramienta | Uso |
 |-------------|-----|
-| Claude Code (Anthropic) | Revisión del código del microservicio y corrección de errores (validaciones, manejo de contraseñas, códigos HTTP). |
-| Claude Code (Anthropic) | Apoyo en la escritura del Dockerfile, Docker Compose, manifiestos de Kubernetes, pipeline de GitHub Actions, configuración de Dependabot, pruebas automatizadas y documentación técnica de este README. |
+| Claude Code (Anthropic) | Generación de la implementación técnica (Dockerfile, Compose, Kubernetes, pipeline, pruebas) y corrección del microservicio, revisadas y validadas por el estudiante. |
+| Claude Code (Anthropic) | Explicación de conceptos y decisiones técnicas como apoyo al aprendizaje. |
 
-Todo el contenido generado fue revisado, probado y validado por el equipo. Referencia: [Biblioteca Duoc UC — Uso de IA](https://bibliotecas.duoc.cl/ia).
+La elección de herramientas, la configuración de Snyk y GitHub, los merges, la validación de los despliegues y la redacción de la justificación, las conclusiones y la reflexión fueron realizadas por el estudiante sin IA. Referencia: [Biblioteca Duoc UC — Uso de IA](https://bibliotecas.duoc.cl/ia).
 
-## 📌 Conclusiones
+## Conclusiones
 
-> ✍️ **Sección para completar por el equipo, sin uso de IA.**
+Logramos que todo el ciclo del microservicio corra solo. Cada cambio se prueba, se revisa en seguridad, se empaqueta y sale a staging y luego a producción sin que nadie lo haga a mano.
 
-### Reflexión individual — Integrante 1
+### Lo que el pipeline nos frenó
+Lo mejor fue ver que paraba problemas de verdad. Snyk encontró 30 vulnerabilidades (23 altas y 7 críticas) porque Spring Boot 3.5 ya no tenía parches, así que migramos a 4.1.2, fijamos Jackson 3.1.8 y sacamos JAXB, que tenía una falla sin solución publicada. También arreglamos el Maven Wrapper incompleto, la API que partía antes que MySQL (con un initContainer) y nginx, que no repartía la carga hasta configurar la resolución DNS dinámica.
 
-> ✍️ Aprendizaje y contribución al proyecto (sin uso de IA).
+### Mejoras futuras
+Más adelante nos gustaría hacer una prueba de carga que muestre el autoescalado, agregar rollback automático si un despliegue falla, usar Flyway para las migraciones, sumar autenticación a la API y probar todo en un cloud real.
 
-### Reflexión individual — Integrante 2
-
-> ✍️ Aprendizaje y contribución al proyecto (sin uso de IA).
+### Reflexión individual — Javier Lara Bustos
+Me quedó claro que un pipeline es mucho más que correr pruebas: es una serie de filtros para que nada roto llegue a producción. Lo más difícil fue Kubernetes, entender pods, probes y HPA, y al principio no sabía por qué Snyk lo bloqueaba todo, hasta que vi que eran fallas reales. Yo configuré Snyk y los secrets, revisé y mergeé los cambios y probé los despliegues. Lo hice apoyándome en una IA, pero revisando y entendiendo cada paso.
