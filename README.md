@@ -440,20 +440,16 @@ Registro de la [ejecución con fallo simulado](https://github.com/j4vierlb/EcoMa
 
 ## Justificación técnica
 
-### Contenedores
-Armamos el Dockerfile en dos pasos: primero se compila con JDK y Maven, y después se pasa solo lo necesario a una imagen con JRE. Así pesa menos y no queda ninguna herramienta que alguien pueda aprovechar. Dejamos las dependencias aparte del código para no reconstruir todo cada vez, y el contenedor no corre como root y trae un healthcheck con Actuator. Usamos eclipse-temurin:17-jre-noble porque Alpine no tiene versión para ARM y esta sirve en ambas arquitecturas.
-
-### Pruebas y calidad
-Dividimos las pruebas en dos tipos porque atrapan cosas distintas. Las unitarias con Mockito son rápidas y no tocan la base de datos, y las de integración con MockMvc y H2 prueban los endpoints completos. Pusimos un mínimo de 80% de cobertura con JaCoCo, suficiente para obligarnos a probar lo importante sin matarnos por llegar al 100%. Si no llega, el build se cae y no avanza nada.
-
-### Seguridad
-Nos quedamos con Snyk porque con una sola herramienta cubre dependencias, código e imagen. En dependencias y código el pipeline se frena con severidad alta, ya que se arregla subiendo versiones. En la imagen solo se frena con críticas, porque la imagen base siempre trae fallas altas sin parche y nunca pasaríamos. Los resultados se ven en la pestaña Security de GitHub, y Dependabot sugiere actualizaciones cada semana.
-
-### Despliegue y trazabilidad
-A cada imagen le ponemos el hash del commit y etiquetas OCI, así siempre sabemos qué código hay detrás de lo que está corriendo. Se publica exactamente la misma imagen que ya pasó las pruebas y el escaneo, sin reconstruirla. Usamos los environments de GitHub (staging y production) para guardar el historial de despliegues, y en Kubernetes anotamos el Deployment con el commit y la corrida del pipeline.
-
-### Orquestación
-Para staging nos bastó Docker Compose, que levanta rápido la API con MySQL y nginx para probar que todo funcione. En producción usamos Kubernetes porque da lo que Compose no puede: escala solo entre 2 y 5 réplicas cuando la CPU pasa del 70%, actualiza sin cortar el servicio, reinicia lo que falle y deja que solo la API hable con MySQL. Partimos con 2 réplicas para que una siga funcionando si la otra cae, y limitamos a 512 MB porque medimos un uso de unos 210.
+- **Dockerfile multi-etapa:** la imagen final no lleva JDK, Maven ni código fuente, así pesa menos y tiene menos riesgos. Corre sin privilegios para limitar el daño si la comprometen.
+- **JRE a medida con jlink:** jlink arma un JRE con solo los módulos de Java que usa la app, en vez de llevar el JRE completo. La imagen bajó de 523 MB a 346 MB, y con menos software instalado hay menos posibles vulnerabilidades. Va sobre ubuntu:noble, que funciona en Intel y ARM.
+- **Pruebas unitarias e integración:** cada tipo detecta errores distintos, así que con una sola quedaría un hueco.
+- **Cobertura del 80%:** obliga a probar lo importante sin gastar esfuerzo en llegar al 100%, y si no se cumple el build falla.
+- **Snyk:** una herramienta cubre dependencias, código e imagen. Bloqueamos desde severidad alta en lo que podemos corregir, y solo con críticas en la imagen, porque la base suele traer fallas altas sin parche.
+- **Etiqueta por commit:** cualquier versión desplegada se rastrea hasta su código exacto, y solo se publica la imagen que ya pasó las pruebas.
+- **Compose y Kubernetes:** Compose es simple para validar en staging, y Kubernetes da autoescalado, actualizaciones sin cortes, reinicio automático y aislamiento de red en producción.
+- **2 réplicas y 512 MB:** con 2 réplicas el servicio sigue si una falla, y el límite sale del consumo medido de unos 210 MB.
+- **Prueba de carga:** demuestra con datos que el autoescalado funciona, en lugar de suponer que escala al pasar el 70% de CPU.
+- **Rollback automático:** si un despliegue falla, vuelve solo a la versión anterior sin depender de alguien que lo note. Esa versión se identifica con la etiqueta produccion, que solo recibe una imagen después de pasar la verificación, y las etiquetas por commit indican qué código tiene cada una.
 
 ## Declaración de uso de Inteligencia Artificial
 
