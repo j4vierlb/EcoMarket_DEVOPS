@@ -1,0 +1,33 @@
+# Escala la API entre 2 y 5 réplicas según el uso de CPU
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: ecomarket
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ecomarket
+  minReplicas: 2
+  maxReplicas: 5
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 120
+---
+# Garantiza que siempre quede al menos una réplica durante mantenimientos del clúster
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: ecomarket
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ecomarket

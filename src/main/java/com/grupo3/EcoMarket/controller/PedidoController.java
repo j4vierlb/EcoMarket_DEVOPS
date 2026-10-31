@@ -1,36 +1,46 @@
 package com.grupo3.EcoMarket.controller;
 
-import com.grupo3.EcoMarket.model.pedido;
-import com.grupo3.EcoMarket.service.Pedidoservice;
-import org.springframework.beans.factory.annotation.Autowired;
+import com.grupo3.EcoMarket.model.Pedido;
+import com.grupo3.EcoMarket.service.PedidoService;
+import jakarta.validation.Valid;
+import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
-import java.util.Optional;
 
 @RestController
 @RequestMapping("/api/pedidos")
 public class PedidoController {
 
-    @Autowired
-    private Pedidoservice pedidoService;
+    private final PedidoService pedidoService;
+
+    public PedidoController(PedidoService pedidoService) {
+        this.pedidoService = pedidoService;
+    }
 
     @GetMapping
-    public List<pedido> listarPedidos() {
+    public List<Pedido> listarPedidos() {
         return pedidoService.obtenerTodos();
     }
 
     @GetMapping("/{id}")
-    public Optional<pedido> obtenerPedido(@PathVariable Long id) {
+    public Pedido obtenerPedido(@PathVariable Long id) {
         return pedidoService.obtenerPorId(id);
     }
 
     @PostMapping
-    public pedido crearPedido(@RequestBody pedido pedido) {
-        return pedidoService.guardar(pedido);
+    @ResponseStatus(HttpStatus.CREATED)
+    public Pedido crearPedido(@Valid @RequestBody Pedido pedido) {
+        return pedidoService.crear(pedido);
+    }
+
+    @PutMapping("/{id}")
+    public Pedido actualizarPedido(@PathVariable Long id, @Valid @RequestBody Pedido pedido) {
+        return pedidoService.actualizar(id, pedido);
     }
 
     @DeleteMapping("/{id}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
     public void eliminarPedido(@PathVariable Long id) {
         pedidoService.eliminar(id);
     }
