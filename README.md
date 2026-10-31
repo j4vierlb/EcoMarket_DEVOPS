@@ -112,12 +112,25 @@ flowchart LR
 - Se construye con el [`Dockerfile`](Dockerfile), se arranca y se verifica que queda *healthy* y que no corre como root.
 - Se ejecuta la [prueba de humo](scripts/smoke-test.sh) contra el contenedor.
 - Se escanea con Snyk Container y solo entonces se publica en GitHub Container Registry (`ghcr.io/j4vierlb/ecomarket`).
+- Al publicarla se genera su **SBOM** (inventario de componentes en formato SPDX) y dos **atestaciones firmadas** (procedencia y SBOM) que certifican qué commit y qué ejecución del pipeline la produjeron. Se verifican con:
+  ```bash
+  gh attestation verify oci://ghcr.io/j4vierlb/ecomarket:<etiqueta> --owner j4vierlb
+  ```
 
 **4a. Staging — Docker Compose (IE4)**
 Levanta MySQL, 2 réplicas de la API y un balanceador nginx con la imagen recién publicada. Ejecuta la prueba de humo y comprueba que las peticiones se reparten entre las réplicas.
 
 **4b. Producción — Kubernetes (IE4, IE5)**
-Crea un clúster Kubernetes efímero con [kind](https://kind.sigs.k8s.io/) que simula el entorno cloud, despliega los manifiestos de [`k8s/`](k8s/) con la imagen del commit, espera el *rollout* y ejecuta la prueba de humo.
+Crea un clúster Kubernetes efímero con [kind](https://kind.sigs.k8s.io/) que simula el entorno cloud y reproduce una actualización real:
+
+1. **Estado inicial**: despliega la versión que ya estaba en producción (imagen con la etiqueta `produccion`).
+2. **Rolling update** a la imagen del commit nuevo, sin cortes (`maxUnavailable: 0`).
+3. **Verificación**: espera el *rollout* y ejecuta la prueba de humo.
+4. **Rollback automático**: si la verificación falla, ejecuta `kubectl rollout undo`, comprueba que la versión anterior responde y marca el despliegue como fallido.
+5. **Prueba de carga**: si la versión nueva funciona, genera tráfico durante 3 minutos y registra en el resumen cómo el HPA aumenta las réplicas.
+6. Solo entonces la imagen nueva recibe la etiqueta `produccion` y pasa a ser la referencia para un futuro rollback.
+
+**Demostrar el rollback**: en *Actions › EcoMarket CI/CD › Run workflow*, elige la rama `main` y marca **"simular_fallo"**. El pipeline intentará desplegar una versión defectuosa, Kubernetes la mantendrá sin tráfico (las réplicas anteriores siguen atendiendo) y el rollback devolverá producción a la versión estable.
 
 ### 🔎 Trazabilidad
 
@@ -254,7 +267,7 @@ El [`Dockerfile`](Dockerfile) usa **dos etapas**: una con el JDK para compilar y
 - **Usuario sin privilegios** (UID 10001) y archivos de la aplicación de solo lectura para ese usuario.
 - **`HEALTHCHECK`** con el endpoint de Actuator `/actuator/health/liveness`.
 - **Memoria de la JVM ajustada al contenedor** (`-XX:MaxRAMPercentage=75`).
-- Imagen base `eclipse-temurin:17-jre-noble`, multiplataforma (funciona en Intel/AMD y en Apple Silicon).
+- **JRE a medida con `jlink`**: en vez del JRE completo, la imagen incluye solo los módulos de Java que usa la aplicación (calculados con `jdeps`), sobre una base `ubuntu:noble` mínima y multiplataforma. Esto reduce el tamaño y la cantidad de software que puede tener vulnerabilidades. El *healthcheck* usa `bash` en vez de `curl` o `wget`, que no se instalan.
 
 ### Docker Compose — staging (IE5)
 
