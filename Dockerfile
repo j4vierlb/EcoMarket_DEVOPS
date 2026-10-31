@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # ---------- Etapa 1: compilación ----------
-FROM eclipse-temurin:17-jdk-noble AS build
+FROM eclipse-temurin:24-jdk-noble AS build
 WORKDIR /app
 
 # Copiar primero solo lo necesario para resolver dependencias (aprovecha la caché de capas)
@@ -15,7 +15,7 @@ RUN ./mvnw -B -q package -DskipTests \
     && java -Djarmode=tools -jar target/*.jar extract --layers --launcher --destination target/extracted
 
 # ---------- Etapa 2: ejecución ----------
-FROM eclipse-temurin:17-jre-noble
+FROM eclipse-temurin:24-jre-noble
 WORKDIR /app
 
 # Usuario sin privilegios
