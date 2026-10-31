@@ -385,27 +385,39 @@ Se corrige la rama de hotfix para mantener la automatización y la sincronizaci�
 
 ## 🧠 Justificación técnica
 
-> ✍️ **Sección para completar por el equipo** (sin IA, según las indicaciones de la evaluación): por qué eligieron estas herramientas y configuraciones (Snyk, umbrales de severidad, cobertura del 80 %, Compose para staging y Kubernetes para producción, número de réplicas, límites de recursos, etc.).
+### Contenedores
+Armamos el Dockerfile en dos pasos: primero se compila con JDK y Maven, y después se pasa solo lo necesario a una imagen con JRE. Así pesa menos y no queda ninguna herramienta que alguien pueda aprovechar. Dejamos las dependencias aparte del código para no reconstruir todo cada vez, y el contenedor no corre como root y trae un healthcheck con Actuator. Usamos eclipse-temurin:17-jre-noble porque Alpine no tiene versión para ARM y esta sirve en ambas arquitecturas.
+
+### Pruebas y calidad
+Dividimos las pruebas en dos tipos porque atrapan cosas distintas. Las unitarias con Mockito son rápidas y no tocan la base de datos, y las de integración con MockMvc y H2 prueban los endpoints completos. Pusimos un mínimo de 80% de cobertura con JaCoCo, suficiente para obligarnos a probar lo importante sin matarnos por llegar al 100%. Si no llega, el build se cae y no avanza nada.
+
+### Seguridad
+Nos quedamos con Snyk porque con una sola herramienta cubre dependencias, código e imagen. En dependencias y código el pipeline se frena con severidad alta, ya que se arregla subiendo versiones. En la imagen solo se frena con críticas, porque la imagen base siempre trae fallas altas sin parche y nunca pasaríamos. Los resultados se ven en la pestaña Security de GitHub, y Dependabot sugiere actualizaciones cada semana.
+
+### Despliegue y trazabilidad
+A cada imagen le ponemos el hash del commit y etiquetas OCI, así siempre sabemos qué código hay detrás de lo que está corriendo. Se publica exactamente la misma imagen que ya pasó las pruebas y el escaneo, sin reconstruirla. Usamos los environments de GitHub (staging y production) para guardar el historial de despliegues, y en Kubernetes anotamos el Deployment con el commit y la corrida del pipeline.
+
+### Orquestación
+Para staging nos bastó Docker Compose, que levanta rápido la API con MySQL y nginx para probar que todo funcione. En producción usamos Kubernetes porque da lo que Compose no puede: escala solo entre 2 y 5 réplicas cuando la CPU pasa del 70%, actualiza sin cortar el servicio, reinicia lo que falle y deja que solo la API hable con MySQL. Partimos con 2 réplicas para que una siga funcionando si la otra cae, y limitamos a 512 MB porque medimos un uso de unos 210.
 
 ## 🤖 Declaración de uso de Inteligencia Artificial
 
-> ✍️ **Revisar y completar por el equipo.** Borrador con los usos reales registrados:
-
 | Herramienta | Uso |
 |-------------|-----|
-| Claude Code (Anthropic) | Revisión del código del microservicio y corrección de errores (validaciones, manejo de contraseñas, códigos HTTP). |
-| Claude Code (Anthropic) | Apoyo en la escritura del Dockerfile, Docker Compose, manifiestos de Kubernetes, pipeline de GitHub Actions, configuración de Dependabot, pruebas automatizadas y documentación técnica de este README. |
+| Claude Code (Anthropic) | Generación de la implementación técnica (Dockerfile, Compose, Kubernetes, pipeline, pruebas) y corrección del microservicio, revisadas y validadas por el estudiante. |
+| Claude Code (Anthropic) | Explicación de conceptos y decisiones técnicas como apoyo al aprendizaje. |
 
-Todo el contenido generado fue revisado, probado y validado por el equipo. Referencia: [Biblioteca Duoc UC — Uso de IA](https://bibliotecas.duoc.cl/ia).
+La elección de herramientas, la configuración de Snyk y GitHub, los merges, la validación de los despliegues y la redacción de la justificación, las conclusiones y la reflexión fueron realizadas por el estudiante sin IA. Referencia: [Biblioteca Duoc UC — Uso de IA](https://bibliotecas.duoc.cl/ia).
 
 ## 📌 Conclusiones
 
-> ✍️ **Sección para completar por el equipo, sin uso de IA.**
+Logramos que todo el ciclo del microservicio corra solo. Cada cambio se prueba, se revisa en seguridad, se empaqueta y sale a staging y luego a producción sin que nadie lo haga a mano.
 
-### Reflexión individual — Integrante 1
+### Lo que el pipeline nos frenó
+Lo mejor fue ver que paraba problemas de verdad. Snyk encontró 30 vulnerabilidades (23 altas y 7 críticas) porque Spring Boot 3.5 ya no tenía parches, así que migramos a 4.1.2, fijamos Jackson 3.1.8 y sacamos JAXB, que tenía una falla sin solución publicada. También arreglamos el Maven Wrapper incompleto, la API que partía antes que MySQL (con un initContainer) y nginx, que no repartía la carga hasta configurar la resolución DNS dinámica.
 
-> ✍️ Aprendizaje y contribución al proyecto (sin uso de IA).
+### Mejoras futuras
+Más adelante nos gustaría hacer una prueba de carga que muestre el autoescalado, agregar rollback automático si un despliegue falla, usar Flyway para las migraciones, sumar autenticación a la API y probar todo en un cloud real.
 
-### Reflexión individual — Integrante 2
-
-> ✍️ Aprendizaje y contribución al proyecto (sin uso de IA).
+### Reflexión individual — Javier Lara Bustos
+Me quedó claro que un pipeline es mucho más que correr pruebas: es una serie de filtros para que nada roto llegue a producción. Lo más difícil fue Kubernetes, entender pods, probes y HPA, y al principio no sabía por qué Snyk lo bloqueaba todo, hasta que vi que eran fallas reales. Yo configuré Snyk y los secrets, revisé y mergeé los cambios y probé los despliegues. Lo hice apoyándome en una IA, pero revisando y entendiendo cada paso.
