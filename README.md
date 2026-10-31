@@ -385,33 +385,71 @@ Content-Type: application/json
 
 ---
 
+## Evidencias
+
+Ejecuciones reales del pipeline que demuestran cada parte del encargo. En cada enlace, la sección **Summary** muestra el resumen de pruebas, seguridad, imagen y despliegue.
+
+| Qué demuestra | Indicador | Evidencia |
+|---------------|-----------|-----------|
+| Snyk **bloqueó** el pipeline por 30 vulnerabilidades (23 altas, 7 críticas) de Spring Boot 3.5 | IE3 | [Ejecución bloqueada](https://github.com/j4vierlb/EcoMarket_DEVOPS/actions/runs/39893755541/attempts/2) |
+| Tras actualizar a Spring Boot 4.1.2 quedaron 2; se corrigieron fijando Jackson 3.1.8 y excluyendo JAXB | IE3 | [Ejecución con 2 restantes](https://github.com/j4vierlb/EcoMarket_DEVOPS/actions/runs/41164334069) · [PR #2](https://github.com/j4vierlb/EcoMarket_DEVOPS/pull/2) |
+| Despliegue automático en **staging** (Docker Compose: MySQL + 2 réplicas + nginx) | IE4, IE5 | [Ejecución en develop](https://github.com/j4vierlb/EcoMarket_DEVOPS/actions/runs/41214788696) |
+| Despliegue automático en **producción** (Kubernetes) con **autoescalado bajo carga** | IE4, IE5 | [Ejecución en main](https://github.com/j4vierlb/EcoMarket_DEVOPS/actions/runs/41215808186) |
+| **Rollback automático** ante una versión defectuosa (fallo simulado) | IE4 | [Ejecución con rollback](https://github.com/j4vierlb/EcoMarket_DEVOPS/actions/runs/41219235225) |
+| Dependabot abre PRs de actualización y pasan por el pipeline completo | IE3 | [PRs de Dependabot](https://github.com/j4vierlb/EcoMarket_DEVOPS/pulls?q=is%3Apr+author%3Aapp%2Fdependabot) |
+| Alertas de seguridad publicadas en GitHub (SARIF de Snyk) | IE3 | Pestaña *Security › Code scanning*, visible para los administradores del repositorio; los checks *Snyk Open Source*, *SnykCode* y *Snyk Container* aparecen en cada PR |
+| Atestaciones firmadas (procedencia SLSA y SBOM) de cada imagen publicada | IE1, IE4 | [Atestaciones](https://github.com/j4vierlb/EcoMarket_DEVOPS/attestations) |
+| Imágenes publicadas y etiquetadas por commit | IE1, IE4 | [Paquete ecomarket](https://github.com/j4vierlb/EcoMarket_DEVOPS/pkgs/container/ecomarket) |
+
+### Autoescalado durante la prueba de carga
+
+Registro de la [ejecución en producción](https://github.com/j4vierlb/EcoMarket_DEVOPS/actions/runs/41215808186): con la carga, la CPU media supera el objetivo del 70 % y el HPA pasa de 2 a 3 réplicas a los 40 s y a 5 (el máximo) a los 60 s.
+
+| Segundo | CPU media / objetivo | Réplicas |
+|--------:|---------------------:|---------:|
+| 0 | — / 70 % | 2 |
+| 20 | 79 % / 70 % | 2 |
+| 40 | 187 % / 70 % | 3 |
+| 60 | 395 % / 70 % | 5 |
+| 120 | 289 % / 70 % | 5 |
+| 180 | 277 % / 70 % | 5 |
+
+### Rollback automático
+
+Registro de la [ejecución con fallo simulado](https://github.com/j4vierlb/EcoMarket_DEVOPS/actions/runs/41219235225):
+
+1. Producción parte con la versión estable (`9c155b8`, etiqueta `produccion`).
+2. Se despliega una imagen inexistente (`version-defectuosa`): el pod nuevo queda en `ImagePullBackOff` y, gracias a `maxUnavailable: 0`, las 2 réplicas estables siguen atendiendo.
+3. La verificación detecta que el *rollout* no termina (`timed out waiting for the condition`).
+4. El pipeline ejecuta `kubectl rollout undo`, la versión `9c155b8` vuelve a estar activa y la prueba de humo pasa completa.
+5. El despliegue se marca como fallido (en rojo), porque la versión nueva no llegó a producción.
+
+### Tamaño de la imagen
+
+| Versión | Tamaño |
+|---------|-------:|
+| JRE completo (`eclipse-temurin:17-jre-noble`) | 523 MB |
+| JRE a medida con `jlink` sobre `ubuntu:noble` | 346 MB (−34 %) |
+
+---
+
 ## Autor
 
 **Javier Lara Bustos**  
 [GitHub](https://github.com/j4vierlb)
 
-## Hotfix: ajuste de pipeline
-
-Se corrige la rama de hotfix para mantener la automatización y la sincronización entre main y develop.
-
----
-
 ## Justificación técnica
 
-### Contenedores
-Armamos el Dockerfile en dos pasos: primero se compila con JDK y Maven, y después se pasa solo lo necesario a una imagen con JRE. Así pesa menos y no queda ninguna herramienta que alguien pueda aprovechar. Dejamos las dependencias aparte del código para no reconstruir todo cada vez, y el contenedor no corre como root y trae un healthcheck con Actuator. Usamos eclipse-temurin:17-jre-noble porque Alpine no tiene versión para ARM y esta sirve en ambas arquitecturas.
-
-### Pruebas y calidad
-Dividimos las pruebas en dos tipos porque atrapan cosas distintas. Las unitarias con Mockito son rápidas y no tocan la base de datos, y las de integración con MockMvc y H2 prueban los endpoints completos. Pusimos un mínimo de 80% de cobertura con JaCoCo, suficiente para obligarnos a probar lo importante sin matarnos por llegar al 100%. Si no llega, el build se cae y no avanza nada.
-
-### Seguridad
-Nos quedamos con Snyk porque con una sola herramienta cubre dependencias, código e imagen. En dependencias y código el pipeline se frena con severidad alta, ya que se arregla subiendo versiones. En la imagen solo se frena con críticas, porque la imagen base siempre trae fallas altas sin parche y nunca pasaríamos. Los resultados se ven en la pestaña Security de GitHub, y Dependabot sugiere actualizaciones cada semana.
-
-### Despliegue y trazabilidad
-A cada imagen le ponemos el hash del commit y etiquetas OCI, así siempre sabemos qué código hay detrás de lo que está corriendo. Se publica exactamente la misma imagen que ya pasó las pruebas y el escaneo, sin reconstruirla. Usamos los environments de GitHub (staging y production) para guardar el historial de despliegues, y en Kubernetes anotamos el Deployment con el commit y la corrida del pipeline.
-
-### Orquestación
-Para staging nos bastó Docker Compose, que levanta rápido la API con MySQL y nginx para probar que todo funcione. En producción usamos Kubernetes porque da lo que Compose no puede: escala solo entre 2 y 5 réplicas cuando la CPU pasa del 70%, actualiza sin cortar el servicio, reinicia lo que falle y deja que solo la API hable con MySQL. Partimos con 2 réplicas para que una siga funcionando si la otra cae, y limitamos a 512 MB porque medimos un uso de unos 210.
+- **Dockerfile multi-etapa:** la imagen final no lleva JDK, Maven ni código fuente, así pesa menos y tiene menos riesgos. Corre sin privilegios para limitar el daño si la comprometen.
+- **JRE a medida con jlink:** jlink arma un JRE con solo los módulos de Java que usa la app, en vez de llevar el JRE completo. La imagen bajó de 523 MB a 346 MB, y con menos software instalado hay menos posibles vulnerabilidades. Va sobre ubuntu:noble, que funciona en Intel y ARM.
+- **Pruebas unitarias e integración:** cada tipo detecta errores distintos, así que con una sola quedaría un hueco.
+- **Cobertura del 80%:** obliga a probar lo importante sin gastar esfuerzo en llegar al 100%, y si no se cumple el build falla.
+- **Snyk:** una herramienta cubre dependencias, código e imagen. Bloqueamos desde severidad alta en lo que podemos corregir, y solo con críticas en la imagen, porque la base suele traer fallas altas sin parche.
+- **Etiqueta por commit:** cualquier versión desplegada se rastrea hasta su código exacto, y solo se publica la imagen que ya pasó las pruebas.
+- **Compose y Kubernetes:** Compose es simple para validar en staging, y Kubernetes da autoescalado, actualizaciones sin cortes, reinicio automático y aislamiento de red en producción.
+- **2 réplicas y 512 MB:** con 2 réplicas el servicio sigue si una falla, y el límite sale del consumo medido de unos 210 MB.
+- **Prueba de carga:** demuestra con datos que el autoescalado funciona, en lugar de suponer que escala al pasar el 70% de CPU.
+- **Rollback automático:** si un despliegue falla, vuelve solo a la versión anterior sin depender de alguien que lo note. Esa versión se identifica con la etiqueta produccion, que solo recibe una imagen después de pasar la verificación, y las etiquetas por commit indican qué código tiene cada una.
 
 ## Declaración de uso de Inteligencia Artificial
 
