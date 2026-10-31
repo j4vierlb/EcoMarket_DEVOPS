@@ -25,6 +25,10 @@ updates:
     labels: [dependencias, docker]
     commit-message:
       prefix: "chore(docker)"
+    # Java 17 es LTS: no proponer saltos a versiones mayores (p. ej. 24, que no es LTS)
+    ignore:
+      - dependency-name: eclipse-temurin
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: github-actions
     directory: /
