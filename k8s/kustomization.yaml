@@ -1,0 +1,17 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: ecomarket
+
+resources:
+  - namespace.yaml
+  - configmap.yaml
+  - mysql.yaml
+  - app.yaml
+  - hpa.yaml
+  - networkpolicy.yaml
+
+# El pipeline reemplaza la imagen por la etiquetada con el commit (sha-xxxxxxx)
+images:
+  - name: ecomarket
+    newName: ecomarket
+    newTag: local

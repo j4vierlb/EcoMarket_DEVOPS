@@ -6,3 +6,6 @@ HELP.md
 .idea/
 *.iml
 .vscode/
+
+# Variables de entorno locales
+.env
