@@ -16,6 +16,8 @@
 	<properties>
 		<java.version>17</java.version>
 		<jacoco.version>0.8.15</jacoco.version>
+		<!-- Corrige SNYK-JAVA-TOOLSJACKSONCORE-21761838 (crítica); quitar cuando Spring Boot traiga >= 3.1.8 -->
+		<jackson-bom.version>3.1.8</jackson-bom.version>
 		<!-- Política de calidad: cobertura mínima de líneas exigida por el pipeline -->
 		<jacoco.minimo.lineas>0.80</jacoco.minimo.lineas>
 	</properties>
@@ -23,6 +25,14 @@
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-data-jpa</artifactId>
+			<exclusions>
+				<!-- Hibernate solo usa JAXB para mapeos XML, que este proyecto no tiene.
+				     Se excluye por SNYK-JAVA-ORGGLASSFISHJAXB-20883142 (XXE, sin versión corregida publicada). -->
+				<exclusion>
+					<groupId>org.glassfish.jaxb</groupId>
+					<artifactId>jaxb-runtime</artifactId>
+				</exclusion>
+			</exclusions>
 		</dependency>
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
