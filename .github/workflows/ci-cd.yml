@@ -401,7 +401,7 @@ jobs:
 
       # Clúster Kubernetes efímero que simula el entorno cloud de producción
       - name: Crear clúster Kubernetes (kind)
-        uses: helm/kind-action@v1.15.1
+        uses: helm/kind-action@v1.15.2
         with:
           cluster_name: ecomarket
 
